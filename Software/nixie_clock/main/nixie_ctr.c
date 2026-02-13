@@ -185,6 +185,30 @@ void i2c_master_init(void)
     ESP_LOGI(IOTAG, "I2C主机初始化成功");
 }
 
+static esp_err_t i2c_read_register_bytes(uint8_t device_addr,
+                                         uint8_t reg_addr,
+                                         uint8_t *data,
+                                         size_t data_len,
+                                         TickType_t timeout_ticks)
+{
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    if (cmd == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (device_addr << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, reg_addr, true);
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (device_addr << 1) | I2C_MASTER_READ, true);
+    i2c_master_read(cmd, data, data_len, I2C_MASTER_LAST_NACK);
+    i2c_master_stop(cmd);
+
+    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, timeout_ticks);
+    i2c_cmd_link_delete(cmd);
+    return ret;
+}
+
 // 检查BQ27220电池是否存在
 esp_err_t bq27220_check_presence(void)
 {
@@ -222,25 +246,8 @@ esp_err_t bq27220_get_battery_info(uint8_t *soc, uint16_t *voltage, int16_t *cur
     esp_err_t ret;
     
     // 读取SOC（电量百分比）- 寄存器0x2C
-    uint8_t soc_reg = 0x2C;
     uint8_t soc_data[2] = {0};
-    
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    if (cmd == NULL) {
-        ESP_LOGE(IOTAG, "I2C命令链创建失败");
-        return ESP_ERR_NO_MEM;
-    }
-    
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (BQ27220_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, soc_reg, true);
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (BQ27220_ADDR << 1) | I2C_MASTER_READ, true);
-    i2c_master_read(cmd, soc_data, 2, I2C_MASTER_LAST_NACK);
-    i2c_master_stop(cmd);
-    
-    ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
-    i2c_cmd_link_delete(cmd);
+    ret = i2c_read_register_bytes(BQ27220_ADDR, 0x2C, soc_data, sizeof(soc_data), pdMS_TO_TICKS(100));
     
     if (ret != ESP_OK) {
         ESP_LOGE(IOTAG, "读取SOC失败: %s", esp_err_to_name(ret));
@@ -253,25 +260,8 @@ esp_err_t bq27220_get_battery_info(uint8_t *soc, uint16_t *voltage, int16_t *cur
     *soc = soc_data[0];
     
     // 读取电压 - 寄存器0x08
-    uint8_t volt_reg = 0x08;
     uint8_t volt_data[2] = {0};
-    
-    cmd = i2c_cmd_link_create();
-    if (cmd == NULL) {
-        ESP_LOGE(IOTAG, "I2C命令链创建失败");
-        return ESP_ERR_NO_MEM;
-    }
-    
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (BQ27220_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, volt_reg, true);
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (BQ27220_ADDR << 1) | I2C_MASTER_READ, true);
-    i2c_master_read(cmd, volt_data, 2, I2C_MASTER_LAST_NACK);
-    i2c_master_stop(cmd);
-    
-    ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
-    i2c_cmd_link_delete(cmd);
+    ret = i2c_read_register_bytes(BQ27220_ADDR, 0x08, volt_data, sizeof(volt_data), pdMS_TO_TICKS(100));
     
     if (ret != ESP_OK) {
         ESP_LOGE(IOTAG, "读取电压失败: %s", esp_err_to_name(ret));
@@ -281,25 +271,8 @@ esp_err_t bq27220_get_battery_info(uint8_t *soc, uint16_t *voltage, int16_t *cur
     }
     
     // 读取电流 - 寄存器0x0C
-    uint8_t curr_reg = 0x0C;
     uint8_t curr_data[2] = {0};
-    
-    cmd = i2c_cmd_link_create();
-    if (cmd == NULL) {
-        ESP_LOGE(IOTAG, "I2C命令链创建失败");
-        return ESP_ERR_NO_MEM;
-    }
-    
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (BQ27220_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, curr_reg, true);
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (BQ27220_ADDR << 1) | I2C_MASTER_READ, true);
-    i2c_master_read(cmd, curr_data, 2, I2C_MASTER_LAST_NACK);
-    i2c_master_stop(cmd);
-    
-    ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
-    i2c_cmd_link_delete(cmd);
+    ret = i2c_read_register_bytes(BQ27220_ADDR, 0x0C, curr_data, sizeof(curr_data), pdMS_TO_TICKS(100));
     
     if (ret != ESP_OK) {
         ESP_LOGE(IOTAG, "读取电流失败: %s", esp_err_to_name(ret));
@@ -761,28 +734,8 @@ esp_err_t bq27220_check_and_read_soc(uint8_t *soc, uint16_t *voltage, int16_t *c
 {
     esp_err_t ret;    
     // 读取SOC（电量百分比）- 寄存器0x2C
-    uint8_t soc_reg = 0x2C;
     uint8_t soc_data[2] = {0};
-    
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    if (cmd == NULL) {
-        ESP_LOGE(IOTAG, "I2C命令链创建失败");
-        *soc = 0;
-        *voltage = 0;
-        *current = 0;
-        return ESP_ERR_NO_MEM;
-    }
-    
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (BQ27220_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, soc_reg, true);
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (BQ27220_ADDR << 1) | I2C_MASTER_READ, true);
-    i2c_master_read(cmd, soc_data, 2, I2C_MASTER_LAST_NACK);
-    i2c_master_stop(cmd);
-    
-    ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(250));
-    i2c_cmd_link_delete(cmd);
+    ret = i2c_read_register_bytes(BQ27220_ADDR, 0x2C, soc_data, sizeof(soc_data), pdMS_TO_TICKS(250));
     
     if (ret != ESP_OK) {
         *soc = 0;
@@ -799,59 +752,23 @@ esp_err_t bq27220_check_and_read_soc(uint8_t *soc, uint16_t *voltage, int16_t *c
     *soc = soc_data[0]; // SOC百分比
     
     // 读取电压 - 寄存器0x08
-    uint8_t volt_reg = 0x08;
     uint8_t volt_data[2] = {0};
-    
-    cmd = i2c_cmd_link_create();
-    if (cmd == NULL) {
-        ESP_LOGE(IOTAG, "I2C命令链创建失败");
-        *voltage = 0;
+    ret = i2c_read_register_bytes(BQ27220_ADDR, 0x08, volt_data, sizeof(volt_data), pdMS_TO_TICKS(100));
+    if (ret == ESP_OK) {
+        *voltage = (volt_data[1] << 8) | volt_data[0]; // 小端序
     } else {
-        i2c_master_start(cmd);
-        i2c_master_write_byte(cmd, (BQ27220_ADDR << 1) | I2C_MASTER_WRITE, true);
-        i2c_master_write_byte(cmd, volt_reg, true);
-        i2c_master_start(cmd);
-        i2c_master_write_byte(cmd, (BQ27220_ADDR << 1) | I2C_MASTER_READ, true);
-        i2c_master_read(cmd, volt_data, 2, I2C_MASTER_LAST_NACK);
-        i2c_master_stop(cmd);
-        
-        ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
-        i2c_cmd_link_delete(cmd);
-        
-        if (ret == ESP_OK) {
-            *voltage = (volt_data[1] << 8) | volt_data[0]; // 小端序
-        } else {
-            ESP_LOGW(IOTAG, "读取电压失败: %s", esp_err_to_name(ret));
-            *voltage = 0;
-        }
+        ESP_LOGW(IOTAG, "读取电压失败: %s", esp_err_to_name(ret));
+        *voltage = 0;
     }
     
     // 读取电流 - 寄存器0x0C
-    uint8_t curr_reg = 0x0C;
     uint8_t curr_data[2] = {0};
-    
-    cmd = i2c_cmd_link_create();
-    if (cmd == NULL) {
-        ESP_LOGE(IOTAG, "I2C命令链创建失败");
-        *current = 0;
+    ret = i2c_read_register_bytes(BQ27220_ADDR, 0x0C, curr_data, sizeof(curr_data), pdMS_TO_TICKS(100));
+    if (ret == ESP_OK) {
+        *current = (int16_t)((curr_data[1] << 8) | curr_data[0]); // 小端序，有符号
     } else {
-        i2c_master_start(cmd);
-        i2c_master_write_byte(cmd, (BQ27220_ADDR << 1) | I2C_MASTER_WRITE, true);
-        i2c_master_write_byte(cmd, curr_reg, true);
-        i2c_master_start(cmd);
-        i2c_master_write_byte(cmd, (BQ27220_ADDR << 1) | I2C_MASTER_READ, true);
-        i2c_master_read(cmd, curr_data, 2, I2C_MASTER_LAST_NACK);
-        i2c_master_stop(cmd);
-        
-        ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
-        i2c_cmd_link_delete(cmd);
-        
-        if (ret == ESP_OK) {
-            *current = (int16_t)((curr_data[1] << 8) | curr_data[0]); // 小端序，有符号
-        } else {
-            ESP_LOGW(IOTAG, "读取电流失败: %s", esp_err_to_name(ret));
-            *current = 0;
-        }
+        ESP_LOGW(IOTAG, "读取电流失败: %s", esp_err_to_name(ret));
+        *current = 0;
     }
     
     ESP_LOGI(IOTAG, "BQ27220检测成功 - 电量: %d%%, 电压: %dmV, 电流: %dmA", *soc, *voltage, *current);

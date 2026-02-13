@@ -396,9 +396,7 @@ void ntp_sync_auto_task(void* pvParameters)
         }
         // 自动同步检查
         else if (ntp_config.auto_sync_enabled) {
-            // 检查是否在秒跳变模式
-            // 通过外部函数获取当前唤醒模式，避免直接extern声明
-            extern int get_current_wakeup_mode(void);
+            // 仅在秒跳变模式下自动同步，避免在低功耗模式增加网络负载。
             int current_mode = get_current_wakeup_mode();
             
             if (current_mode == 0) { // WAKEUP_MODE_SECOND

@@ -1,3 +1,6 @@
+#ifndef NIXIE_CTR_H
+#define NIXIE_CTR_H
+
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
@@ -143,3 +146,5 @@ esp_err_t bq27220_check_and_read_soc(uint8_t *soc, uint16_t *voltage, int16_t *c
 esp_err_t bq27220_get_battery_info(uint8_t *soc, uint16_t *voltage, int16_t *current);
 esp_err_t bq27220_configure_gpout_low_battery_alert(uint8_t soc_threshold);
 esp_err_t bq27220_configure_design_capacity(uint16_t design_capacity_mah);
+
+#endif // NIXIE_CTR_H

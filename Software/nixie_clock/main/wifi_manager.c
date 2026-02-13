@@ -1,4 +1,5 @@
 #include "wifi_manager.h"
+#include "app_utils.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -34,6 +35,22 @@ static uint16_t ap_count = 0;
 static int retry_count = 0;
 static const int MAX_RETRY = 5;
 static wifi_config_persistent_t persistent_config;
+
+static const char *wifi_mode_to_string(wifi_manager_mode_t mode)
+{
+    switch (mode) {
+        case WIFI_MODE_OFF:
+            return "OFF";
+        case WIFI_MODE_AP_STA:
+            return "APSTA";
+        case WIFI_MODE_STA_ONLY:
+            return "STA_ONLY";
+        case WIFI_MODE_AP_ONLY:
+            return "AP_ONLY";
+        default:
+            return "UNKNOWN";
+    }
+}
 
 // 事件处理函数
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
@@ -243,9 +260,7 @@ esp_err_t wifi_manager_init(void)
         // 保存默认配置到NVS
         esp_err_t save_ret = wifi_manager_save_config(&persistent_config);
         if (save_ret == ESP_OK) {
-            const char* mode_str = (persistent_config.mode == WIFI_MODE_OFF) ? "OFF" : 
-                                  (persistent_config.mode == WIFI_MODE_AP_STA) ? "APSTA" :
-                                  (persistent_config.mode == WIFI_MODE_STA_ONLY) ? "STA_ONLY" : "AP_ONLY";
+            const char* mode_str = wifi_mode_to_string(persistent_config.mode);
             ESP_LOGI(TAG, "默认配置已保存: AP_SSID=%s, 模式=%s (枚举值=%d)", 
                     persistent_config.ap_ssid, mode_str, persistent_config.mode);
         } else {
@@ -276,9 +291,7 @@ esp_err_t wifi_manager_set_mode(wifi_manager_mode_t mode)
 {
     esp_err_t ret = ESP_OK;
     
-    const char* mode_str = (mode == WIFI_MODE_OFF) ? "OFF" : 
-                          (mode == WIFI_MODE_AP_STA) ? "APSTA" :
-                          (mode == WIFI_MODE_STA_ONLY) ? "STA_ONLY" : "AP_ONLY";
+    const char* mode_str = wifi_mode_to_string(mode);
     ESP_LOGI(TAG, "设置WiFi模式: %s (枚举值=%d)", mode_str, mode);
     
     // 安全地停止当前WiFi，增加更长的延迟确保完全停止
@@ -440,36 +453,9 @@ void wifi_manager_print_scan_results(void)
     }
     
     for (int i = 0; i < ap_count; i++) {
-        const char* auth_mode;
-        switch (ap_records[i].authmode) {
-            case WIFI_AUTH_OPEN:
-                auth_mode = "开放";
-                break;
-            case WIFI_AUTH_WEP:
-                auth_mode = "WEP";
-                break;
-            case WIFI_AUTH_WPA_PSK:
-                auth_mode = "WPA";
-                break;
-            case WIFI_AUTH_WPA2_PSK:
-                auth_mode = "WPA2";
-                break;
-            case WIFI_AUTH_WPA_WPA2_PSK:
-                auth_mode = "WPA/WPA2";
-                break;
-            case WIFI_AUTH_WPA3_PSK:
-                auth_mode = "WPA3";
-                break;
-            default:
-                auth_mode = "其他";
-                break;
-        }
-        
-        // 安全地处理SSID字符串，确保以NULL结尾
-        char ssid_str[33];  // WiFi SSID最大长度为32字节
-        memset(ssid_str, 0, sizeof(ssid_str));
-        memcpy(ssid_str, ap_records[i].ssid, 
-               ap_records[i].ssid[32] == 0 ? strlen((char*)ap_records[i].ssid) : 32);
+        const char* auth_mode = app_wifi_authmode_to_string(ap_records[i].authmode);
+        char ssid_str[33] = {0};
+        app_wifi_format_ssid(ap_records[i].ssid, ssid_str);
         
         ESP_LOGI(TAG, "%4d  %-28s  %4d dBm   %s", 
                 i + 1, 
@@ -550,36 +536,9 @@ esp_err_t wifi_manager_start_ap(const char* ssid, const char* password)
             ESP_LOGI(TAG, "----  ----------------------------  ----------  ------------  --------");
             
             for (int i = 0; i < ap_count; i++) {
-                const char* auth_mode;
-                switch (ap_records[i].authmode) {
-                    case WIFI_AUTH_OPEN:
-                        auth_mode = "开放";
-                        break;
-                    case WIFI_AUTH_WEP:
-                        auth_mode = "WEP";
-                        break;
-                    case WIFI_AUTH_WPA_PSK:
-                        auth_mode = "WPA";
-                        break;
-                    case WIFI_AUTH_WPA2_PSK:
-                        auth_mode = "WPA2";
-                        break;
-                    case WIFI_AUTH_WPA_WPA2_PSK:
-                        auth_mode = "WPA/WPA2";
-                        break;
-                    case WIFI_AUTH_WPA3_PSK:
-                        auth_mode = "WPA3";
-                        break;
-                    default:
-                        auth_mode = "其他";
-                        break;
-                }
-                
-                // 安全地处理SSID字符串，确保以NULL结尾
-                char ssid_str[33];  // WiFi SSID最大长度为32字节
-                memset(ssid_str, 0, sizeof(ssid_str));
-                memcpy(ssid_str, ap_records[i].ssid, 
-                       ap_records[i].ssid[32] == 0 ? strlen((char*)ap_records[i].ssid) : 32);
+                const char* auth_mode = app_wifi_authmode_to_string(ap_records[i].authmode);
+                char ssid_str[33] = {0};
+                app_wifi_format_ssid(ap_records[i].ssid, ssid_str);
                 
                 ESP_LOGI(TAG, "%4d  %-28s  %2d (CH%d)      %4d dBm       %s", 
                         i + 1, 
@@ -867,9 +826,7 @@ esp_err_t wifi_manager_load_config(wifi_config_persistent_t* config)
         ESP_LOGI(TAG, "从NVS加载WiFi配置成功");
         ESP_LOGI(TAG, "  AP_SSID: %s", config->ap_ssid);
         ESP_LOGI(TAG, "  STA_SSID: %s", config->sta_ssid);
-        const char* mode_str = (config->mode == WIFI_MODE_OFF) ? "OFF" : 
-                              (config->mode == WIFI_MODE_AP_STA) ? "APSTA" :
-                              (config->mode == WIFI_MODE_STA_ONLY) ? "STA_ONLY" : "AP_ONLY";
+        const char* mode_str = wifi_mode_to_string(config->mode);
         ESP_LOGI(TAG, "  模式: %s (枚举值=%d)", mode_str, config->mode);
     } else {
         ESP_LOGW(TAG, "从NVS加载配置失败，使用默认配置: %s", esp_err_to_name(ret));

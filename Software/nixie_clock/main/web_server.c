@@ -2,6 +2,7 @@
 #include "nixie_ctr.h"
 #include "ntp_sync.h"
 #include "wifi_manager.h"
+#include "app_utils.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_chip_info.h"
@@ -17,6 +18,35 @@
 
 static const char *TAG = "WEB_SERVER";
 static httpd_handle_t server = NULL;
+
+static const httpd_uri_t WEB_URI_HANDLERS[] = {
+    {.uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL},
+    {.uri = "/api/system-info", .method = HTTP_GET, .handler = api_system_info_handler, .user_ctx = NULL},
+    {.uri = "/api/wifi-config", .method = HTTP_POST, .handler = api_wifi_config_handler, .user_ctx = NULL},
+    {.uri = "/api/ap-config", .method = HTTP_POST, .handler = api_ap_config_handler, .user_ctx = NULL},
+    {.uri = "/api/ntp-config", .method = HTTP_POST, .handler = api_ntp_config_handler, .user_ctx = NULL},
+    {.uri = "/api/ntp-sync", .method = HTTP_POST, .handler = api_ntp_sync_handler, .user_ctx = NULL},
+    {.uri = "/api/manual-time", .method = HTTP_POST, .handler = api_manual_time_handler, .user_ctx = NULL},
+    {.uri = "/api/timezone-config", .method = HTTP_POST, .handler = api_timezone_config_handler, .user_ctx = NULL},
+    {.uri = "/api/reboot", .method = HTTP_POST, .handler = api_reboot_handler, .user_ctx = NULL},
+    {.uri = "/api/factory-reset", .method = HTTP_POST, .handler = api_factory_reset_handler, .user_ctx = NULL},
+    {.uri = "/api/reset-battery", .method = HTTP_POST, .handler = api_reset_battery_handler, .user_ctx = NULL},
+    {.uri = "/api/set-battery-capacity", .method = HTTP_POST, .handler = api_set_battery_capacity_handler, .user_ctx = NULL},
+    {.uri = "/api/wifi/scan", .method = HTTP_GET, .handler = api_wifi_scan_handler, .user_ctx = NULL},
+    {.uri = "/api/display-config", .method = HTTP_POST, .handler = api_display_config_handler, .user_ctx = NULL},
+    {.uri = "/api/refresh-rate", .method = HTTP_POST, .handler = api_refresh_rate_handler, .user_ctx = NULL},
+};
+
+static void build_default_ap_ssid(char *out, size_t out_size)
+{
+    char mac_suffix[5];
+
+    if (wifi_manager_get_mac_suffix(mac_suffix, sizeof(mac_suffix)) == ESP_OK) {
+        snprintf(out, out_size, "%s_%s", WIFI_MANAGER_DEFAULT_SSID, mac_suffix);
+    } else {
+        app_strlcpy(out, WIFI_MANAGER_DEFAULT_SSID, out_size);
+    }
+}
 
 // 重启任务函数
 static void reboot_task(void* param) {
@@ -103,23 +133,22 @@ static void get_system_info(system_info_t *info) {
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("display_config", NVS_READONLY, &nvs_handle);
     if (err == ESP_OK) {
-        size_t required_size = sizeof(info->current_display_content);
-        err = nvs_get_str(nvs_handle, "display_type", info->current_display_content, &required_size);
-        if (err != ESP_OK) {
-            strcpy(info->current_display_content, "时间");
-        }
-        
-        required_size = sizeof(info->current_refresh_rate);
-        err = nvs_get_str(nvs_handle, "refresh_rate", info->current_refresh_rate, &required_size);
-        if (err != ESP_OK) {
-            strcpy(info->current_refresh_rate, "1Hz (1次/秒)");
-        }
+        app_nvs_get_str_or_default(nvs_handle,
+                                   "display_type",
+                                   info->current_display_content,
+                                   sizeof(info->current_display_content),
+                                   "时间");
+        app_nvs_get_str_or_default(nvs_handle,
+                                   "refresh_rate",
+                                   info->current_refresh_rate,
+                                   sizeof(info->current_refresh_rate),
+                                   "1Hz (1次/秒)");
         
         nvs_close(nvs_handle);
     } else {
         // 默认值
-        strcpy(info->current_display_content, "时间");
-        strcpy(info->current_refresh_rate, "1Hz (1次/秒)");
+        app_strlcpy(info->current_display_content, "时间", sizeof(info->current_display_content));
+        app_strlcpy(info->current_refresh_rate, "1Hz (1次/秒)", sizeof(info->current_refresh_rate));
     }
     
     // 网络信息
@@ -135,15 +164,10 @@ static void get_system_info(system_info_t *info) {
     if (wifi_config_ret == ESP_OK) {
         // 确保AP SSID始终显示带MAC后缀的名称
         if (strlen(wifi_config.ap_ssid) > 0) {
-            strcpy(info->ap_ssid, wifi_config.ap_ssid);
+            app_strlcpy(info->ap_ssid, wifi_config.ap_ssid, sizeof(info->ap_ssid));
         } else {
             // 如果配置中没有AP名称，生成默认的带MAC后缀名称
-            char mac_suffix[5];
-            if (wifi_manager_get_mac_suffix(mac_suffix, sizeof(mac_suffix)) == ESP_OK) {
-                snprintf(info->ap_ssid, sizeof(info->ap_ssid), "%s_%s", WIFI_MANAGER_DEFAULT_SSID, mac_suffix);
-            } else {
-                strcpy(info->ap_ssid, WIFI_MANAGER_DEFAULT_SSID);
-            }
+            build_default_ap_ssid(info->ap_ssid, sizeof(info->ap_ssid));
         }
         
         strcpy(info->ap_password, wifi_config.ap_password);
@@ -189,12 +213,7 @@ static void get_system_info(system_info_t *info) {
         info->ntp_sync_interval = ntp_config.sync_interval_sec;
     } else {
         // 生成默认AP名称（带MAC后缀）
-        char mac_suffix[5];
-        if (wifi_manager_get_mac_suffix(mac_suffix, sizeof(mac_suffix)) == ESP_OK) {
-            snprintf(info->ap_ssid, sizeof(info->ap_ssid), "%s_%s", WIFI_MANAGER_DEFAULT_SSID, mac_suffix);
-        } else {
-            strcpy(info->ap_ssid, WIFI_MANAGER_DEFAULT_SSID);
-        }
+        build_default_ap_ssid(info->ap_ssid, sizeof(info->ap_ssid));
         strcpy(info->ap_password, "12345678");
         strcpy(info->ap_ip_address, "192.168.4.1");
         strcpy(info->ap_gateway, "192.168.4.1");
@@ -269,11 +288,7 @@ esp_err_t api_system_info_handler(httpd_req_t *req) {
     cJSON_AddStringToObject(json, "current_display_content", info.current_display_content);
     cJSON_AddStringToObject(json, "current_refresh_rate", info.current_refresh_rate);
     
-    char *json_string = cJSON_Print(json);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, json_string, HTTPD_RESP_USE_STRLEN);
-    
-    free(json_string);
+    app_http_send_json(req, json);
     cJSON_Delete(json);
     return ESP_OK;
 }
@@ -281,12 +296,9 @@ esp_err_t api_system_info_handler(httpd_req_t *req) {
 // WiFi配置API
 esp_err_t api_wifi_config_handler(httpd_req_t *req) {
     char buf[256];
-    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (ret <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request");
+    if (app_http_recv_body(req, buf, sizeof(buf)) != ESP_OK) {
         return ESP_FAIL;
     }
-    buf[ret] = '\0';
     
     cJSON *json = cJSON_Parse(buf);
     if (!json) {
@@ -405,11 +417,7 @@ esp_err_t api_wifi_config_handler(httpd_req_t *req) {
     }
     
 wifi_config_end:
-    char *response_string = cJSON_Print(response);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response_string, HTTPD_RESP_USE_STRLEN);
-    
-    free(response_string);
+    app_http_send_json(req, response);
     cJSON_Delete(response);
     cJSON_Delete(json);
     return ESP_OK;
@@ -418,12 +426,9 @@ wifi_config_end:
 // AP配置API  
 esp_err_t api_ap_config_handler(httpd_req_t *req) {
     char buf[256];
-    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (ret <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request");
+    if (app_http_recv_body(req, buf, sizeof(buf)) != ESP_OK) {
         return ESP_FAIL;
     }
-    buf[ret] = '\0';
     
     cJSON *json = cJSON_Parse(buf);
     if (!json) {
@@ -590,11 +595,7 @@ esp_err_t api_ap_config_handler(httpd_req_t *req) {
     }
     
 ap_config_end:
-    char *response_string = cJSON_Print(response);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response_string, HTTPD_RESP_USE_STRLEN);
-    
-    free(response_string);
+    app_http_send_json(req, response);
     cJSON_Delete(response);
     cJSON_Delete(json);
     return ESP_OK;
@@ -603,12 +604,9 @@ ap_config_end:
 // NTP配置API
 esp_err_t api_ntp_config_handler(httpd_req_t *req) {
     char buf[512];
-    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (ret <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request");
+    if (app_http_recv_body(req, buf, sizeof(buf)) != ESP_OK) {
         return ESP_FAIL;
     }
-    buf[ret] = '\0';
     
     cJSON *json = cJSON_Parse(buf);
     if (!json) {
@@ -666,11 +664,7 @@ esp_err_t api_ntp_config_handler(httpd_req_t *req) {
         ESP_LOGE(TAG, "✗ 获取NTP配置失败: %s", esp_err_to_name(config_ret));
     }
     
-    char *response_string = cJSON_Print(response);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response_string, HTTPD_RESP_USE_STRLEN);
-    
-    free(response_string);
+    app_http_send_json(req, response);
     cJSON_Delete(response);
     cJSON_Delete(json);
     return ESP_OK;
@@ -729,11 +723,7 @@ esp_err_t api_ntp_sync_handler(httpd_req_t *req) {
         }
     }
     
-    char *response_string = cJSON_Print(response);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response_string, HTTPD_RESP_USE_STRLEN);
-    
-    free(response_string);
+    app_http_send_json(req, response);
     cJSON_Delete(response);
     return ESP_OK;
 }
@@ -741,12 +731,9 @@ esp_err_t api_ntp_sync_handler(httpd_req_t *req) {
 // 手动时间设置API
 esp_err_t api_manual_time_handler(httpd_req_t *req) {
     char buf[256];
-    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (ret <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request");
+    if (app_http_recv_body(req, buf, sizeof(buf)) != ESP_OK) {
         return ESP_FAIL;
     }
-    buf[ret] = '\0';
     
     cJSON *json = cJSON_Parse(buf);
     if (!json) {
@@ -808,11 +795,7 @@ esp_err_t api_manual_time_handler(httpd_req_t *req) {
         ESP_LOGE(TAG, "手动时间设置失败: %s", esp_err_to_name(set_ret));
     }
     
-    char *response_string = cJSON_Print(response);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response_string, HTTPD_RESP_USE_STRLEN);
-    
-    free(response_string);
+    app_http_send_json(req, response);
     cJSON_Delete(response);
     cJSON_Delete(json);
     return ESP_OK;
@@ -821,12 +804,9 @@ esp_err_t api_manual_time_handler(httpd_req_t *req) {
 // 时区配置API
 esp_err_t api_timezone_config_handler(httpd_req_t *req) {
     char buf[256];
-    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (ret <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request");
+    if (app_http_recv_body(req, buf, sizeof(buf)) != ESP_OK) {
         return ESP_FAIL;
     }
-    buf[ret] = '\0';
     
     cJSON *json = cJSON_Parse(buf);
     if (!json) {
@@ -863,11 +843,7 @@ esp_err_t api_timezone_config_handler(httpd_req_t *req) {
         ESP_LOGE(TAG, "时区设置失败: %s", esp_err_to_name(set_ret));
     }
     
-    char *response_string = cJSON_Print(response);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response_string, HTTPD_RESP_USE_STRLEN);
-    
-    free(response_string);
+    app_http_send_json(req, response);
     cJSON_Delete(response);
     cJSON_Delete(json);
     return ESP_OK;
@@ -879,11 +855,7 @@ esp_err_t api_reboot_handler(httpd_req_t *req) {
     cJSON_AddStringToObject(response, "message", "系统将在3秒后重启");
     cJSON_AddBoolToObject(response, "success", true);
     
-    char *response_string = cJSON_Print(response);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response_string, HTTPD_RESP_USE_STRLEN);
-    
-    free(response_string);
+    app_http_send_json(req, response);
     cJSON_Delete(response);
     
     ESP_LOGI(TAG, "系统重启请求，3秒后执行重启");
@@ -900,11 +872,7 @@ esp_err_t api_factory_reset_handler(httpd_req_t *req) {
     cJSON_AddStringToObject(response, "message", "恢复出厂设置将在5秒后开始，系统将清除所有配置并重启");
     cJSON_AddBoolToObject(response, "success", true);
     
-    char *response_string = cJSON_Print(response);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response_string, HTTPD_RESP_USE_STRLEN);
-    
-    free(response_string);
+    app_http_send_json(req, response);
     cJSON_Delete(response);
     
     ESP_LOGI(TAG, "恢复出厂设置请求，5秒后执行恢复操作");
@@ -926,11 +894,7 @@ esp_err_t api_reset_battery_handler(httpd_req_t *req) {
     cJSON_AddStringToObject(response, "message", "电量计复位成功");
     cJSON_AddBoolToObject(response, "success", true);
     
-    char *response_string = cJSON_Print(response);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response_string, HTTPD_RESP_USE_STRLEN);
-    
-    free(response_string);
+    app_http_send_json(req, response);
     cJSON_Delete(response);
     
     ESP_LOGI(TAG, "电量计复位请求");
@@ -984,11 +948,7 @@ esp_err_t api_set_battery_capacity_handler(httpd_req_t *req) {
         cJSON_Delete(json);
     }
     
-    char *response_string = cJSON_Print(response);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response_string, HTTPD_RESP_USE_STRLEN);
-    
-    free(response_string);
+    app_http_send_json(req, response);
     cJSON_Delete(response);
     
     return ESP_OK;
@@ -1020,12 +980,7 @@ esp_err_t api_wifi_scan_handler(httpd_req_t *req) {
         } else {
             // 生成带MAC后缀的默认AP名称
             char default_ap_ssid[33];
-            char mac_suffix[5];
-            if (wifi_manager_get_mac_suffix(mac_suffix, sizeof(mac_suffix)) == ESP_OK) {
-                snprintf(default_ap_ssid, sizeof(default_ap_ssid), "%s_%s", WIFI_MANAGER_DEFAULT_SSID, mac_suffix);
-            } else {
-                strcpy(default_ap_ssid, WIFI_MANAGER_DEFAULT_SSID);
-            }
+            build_default_ap_ssid(default_ap_ssid, sizeof(default_ap_ssid));
             wifi_manager_start_ap(default_ap_ssid, WIFI_MANAGER_DEFAULT_PASSWORD);
         }
         vTaskDelay(pdMS_TO_TICKS(1000)); // 等待模式切换完成
@@ -1076,30 +1031,7 @@ esp_err_t api_wifi_scan_handler(httpd_req_t *req) {
         cJSON_AddNumberToObject(network, "rssi", ap_records[i].rssi);
         
         // 加密方式
-        const char* auth_mode;
-        switch (ap_records[i].authmode) {
-            case WIFI_AUTH_OPEN:
-                auth_mode = "Open";
-                break;
-            case WIFI_AUTH_WEP:
-                auth_mode = "WEP";
-                break;
-            case WIFI_AUTH_WPA_PSK:
-                auth_mode = "WPA";
-                break;
-            case WIFI_AUTH_WPA2_PSK:
-                auth_mode = "WPA2";
-                break;
-            case WIFI_AUTH_WPA_WPA2_PSK:
-                auth_mode = "WPA/WPA2";
-                break;
-            case WIFI_AUTH_WPA3_PSK:
-                auth_mode = "WPA3";
-                break;
-            default:
-                auth_mode = "Other";
-                break;
-        }
+        const char* auth_mode = app_wifi_authmode_to_string(ap_records[i].authmode);
         cJSON_AddStringToObject(network, "security", auth_mode);
         
         // 信道
@@ -1114,11 +1046,7 @@ esp_err_t api_wifi_scan_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "✓ WiFi扫描完成，发现 %d 个网络", ap_count);
     
 scan_end:
-    char *response_string = cJSON_Print(response);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response_string, HTTPD_RESP_USE_STRLEN);
-    
-    free(response_string);
+    app_http_send_json(req, response);
     cJSON_Delete(response);
     return ESP_OK;
 }
@@ -1185,11 +1113,7 @@ esp_err_t api_display_config_handler(httpd_req_t *req) {
     cJSON_AddBoolToObject(response, "success", true);
     cJSON_AddStringToObject(response, "message", "显示配置已更新");
     
-    char *response_string = cJSON_Print(response);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response_string, strlen(response_string));
-    
-    free(response_string);
+    app_http_send_json(req, response);
     cJSON_Delete(response);
     return ESP_OK;
 }
@@ -1197,12 +1121,9 @@ esp_err_t api_display_config_handler(httpd_req_t *req) {
 // 刷新率设置API
 esp_err_t api_refresh_rate_handler(httpd_req_t *req) {
     char buf[256];
-    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (ret <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request");
+    if (app_http_recv_body(req, buf, sizeof(buf)) != ESP_OK) {
         return ESP_FAIL;
     }
-    buf[ret] = '\0';
     
     cJSON *json = cJSON_Parse(buf);
     if (!json) {
@@ -1260,11 +1181,7 @@ esp_err_t api_refresh_rate_handler(httpd_req_t *req) {
     cJSON_AddBoolToObject(response, "success", true);
     cJSON_AddStringToObject(response, "message", "刷新率设置已更新");
     
-    char *response_string = cJSON_Print(response);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response_string, strlen(response_string));
-    
-    free(response_string);
+    app_http_send_json(req, response);
     cJSON_Delete(response);
     return ESP_OK;
 }
@@ -1291,126 +1208,9 @@ esp_err_t start_webserver(void) {
         return ESP_FAIL;
     }
     
-    // 注册HTTP处理程序
-    httpd_uri_t index_uri = {
-        .uri = "/",
-        .method = HTTP_GET,
-        .handler = index_handler,
-        .user_ctx = NULL
-    };
-    httpd_register_uri_handler(server, &index_uri);
-    
-    httpd_uri_t api_system_info_uri = {
-        .uri = "/api/system-info",
-        .method = HTTP_GET,
-        .handler = api_system_info_handler,
-        .user_ctx = NULL
-    };
-    httpd_register_uri_handler(server, &api_system_info_uri);
-    
-    httpd_uri_t api_wifi_config_uri = {
-        .uri = "/api/wifi-config",
-        .method = HTTP_POST,
-        .handler = api_wifi_config_handler,
-        .user_ctx = NULL
-    };
-    httpd_register_uri_handler(server, &api_wifi_config_uri);
-    
-    httpd_uri_t api_ap_config_uri = {
-        .uri = "/api/ap-config",
-        .method = HTTP_POST,
-        .handler = api_ap_config_handler,
-        .user_ctx = NULL
-    };
-    httpd_register_uri_handler(server, &api_ap_config_uri);
-    
-    httpd_uri_t api_ntp_config_uri = {
-        .uri = "/api/ntp-config",
-        .method = HTTP_POST,
-        .handler = api_ntp_config_handler,
-        .user_ctx = NULL
-    };
-    httpd_register_uri_handler(server, &api_ntp_config_uri);
-    
-    httpd_uri_t api_ntp_sync_uri = {
-        .uri = "/api/ntp-sync",
-        .method = HTTP_POST,
-        .handler = api_ntp_sync_handler,
-        .user_ctx = NULL
-    };
-    httpd_register_uri_handler(server, &api_ntp_sync_uri);
-    
-    httpd_uri_t api_manual_time_uri = {
-        .uri = "/api/manual-time",
-        .method = HTTP_POST,
-        .handler = api_manual_time_handler,
-        .user_ctx = NULL
-    };
-    httpd_register_uri_handler(server, &api_manual_time_uri);
-    
-    httpd_uri_t api_timezone_config_uri = {
-        .uri = "/api/timezone-config",
-        .method = HTTP_POST,
-        .handler = api_timezone_config_handler,
-        .user_ctx = NULL
-    };
-    httpd_register_uri_handler(server, &api_timezone_config_uri);
-    
-    httpd_uri_t api_reboot_uri = {
-        .uri = "/api/reboot",
-        .method = HTTP_POST,
-        .handler = api_reboot_handler,
-        .user_ctx = NULL
-    };
-    httpd_register_uri_handler(server, &api_reboot_uri);
-    
-    httpd_uri_t api_factory_reset_uri = {
-        .uri = "/api/factory-reset",
-        .method = HTTP_POST,
-        .handler = api_factory_reset_handler,
-        .user_ctx = NULL
-    };
-    httpd_register_uri_handler(server, &api_factory_reset_uri);
-    
-    httpd_uri_t api_reset_battery_uri = {
-        .uri = "/api/reset-battery",
-        .method = HTTP_POST,
-        .handler = api_reset_battery_handler,
-        .user_ctx = NULL
-    };
-    httpd_register_uri_handler(server, &api_reset_battery_uri);
-    
-    httpd_uri_t api_set_battery_capacity_uri = {
-        .uri = "/api/set-battery-capacity",
-        .method = HTTP_POST,
-        .handler = api_set_battery_capacity_handler,
-        .user_ctx = NULL
-    };
-    httpd_register_uri_handler(server, &api_set_battery_capacity_uri);
-    
-    httpd_uri_t api_wifi_scan_uri = {
-        .uri = "/api/wifi/scan",
-        .method = HTTP_GET,
-        .handler = api_wifi_scan_handler,
-        .user_ctx = NULL
-    };
-    httpd_register_uri_handler(server, &api_wifi_scan_uri);
-    
-    httpd_uri_t api_display_config_uri = {
-        .uri = "/api/display-config",
-        .method = HTTP_POST,
-        .handler = api_display_config_handler,
-        .user_ctx = NULL
-    };
-    httpd_register_uri_handler(server, &api_display_config_uri);
-    
-    httpd_uri_t api_refresh_rate_uri = {
-        .uri = "/api/refresh-rate",
-        .method = HTTP_POST,
-        .handler = api_refresh_rate_handler,
-        .user_ctx = NULL
-    };
-    httpd_register_uri_handler(server, &api_refresh_rate_uri);
+    for (size_t i = 0; i < sizeof(WEB_URI_HANDLERS) / sizeof(WEB_URI_HANDLERS[0]); ++i) {
+        httpd_register_uri_handler(server, &WEB_URI_HANDLERS[i]);
+    }
     
     ESP_LOGI(TAG, "Web server started successfully");
     return ESP_OK;
